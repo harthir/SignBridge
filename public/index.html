@@ -1,0 +1,81 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>SignBridge — Nemotron Agents</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; }
+    .grid { display: grid; gap: 16px; grid-template-columns: 1fr; }
+    @media (min-width: 900px) { .grid { grid-template-columns: 1fr 1fr; } }
+    .card { border: 1px solid #ddd; border-radius: 12px; padding: 16px; }
+    .log { background: #fafafa; border: 1px dashed #ccc; padding: 8px; height: 160px; overflow: auto; font: 12px/1.35 ui-monospace, monospace; }
+    button { padding: 8px 12px; border-radius: 8px; border: 1px solid #333; background: #fff; cursor: pointer; }
+    audio { width: 100%; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <h1>SignBridge — Nemotron Agents (VL + Function Calling)</h1>
+  <div class="grid">
+    <div class="card">
+      <h2>🖐️ Sign → 🗣️ Speech</h2>
+      <input id="signFile" type="file" accept="image/*"/>
+      <button id="runSign">Run</button>
+      <p><b>Plan:</b> <span id="plan1">—</span></p>
+      <p><b>Final Text:</b> <span id="final1">—</span></p>
+      <audio id="tts1" controls style="display:none"></audio>
+      <div class="log" id="log1"></div>
+    </div>
+
+    <div class="card">
+      <h2>🗣️ Speech → 🤟 Sign</h2>
+      <input id="speechText" placeholder="Type speech…"/>
+      <button id="runSpeech">Run</button>
+      <p><b>Plan:</b> <span id="plan2">—</span></p>
+      <p><b>For Signing:</b> <span id="final2">—</span></p>
+      <img id="signGif" style="max-width:100%;display:none" alt="sign gif"/>
+      <div class="log" id="log2"></div>
+    </div>
+  </div>
+
+  <script>
+    const API = "http://localhost:8000";
+    const log = (el, msg) => { el.textContent += msg + "\n"; el.scrollTop = el.scrollHeight; };
+
+    document.getElementById("runSign").onclick = async () => {
+      const f = document.getElementById("signFile").files[0];
+      if(!f){ alert("Choose an image"); return; }
+      const fd = new FormData(); fd.append("file", f);
+      const res = await fetch(API + "/run/sign_to_speech", { method: "POST", body: fd });
+      const data = await res.json();
+      document.getElementById("plan1").textContent = data.plan || "(no plan)";
+      document.getElementById("final1").textContent = data.final_text || "(—)";
+      const l = document.getElementById("log1");
+      l.textContent = ""; log(l, JSON.stringify({calls: data.calls, observations: data.observations}, null, 2));
+      const a = document.getElementById("tts1");
+      if (data.final_audio_b64) {
+        a.src = "data:audio/wav;base64," + data.final_audio_b64;
+        a.style.display = "block";
+      } else { a.style.display = "none"; }
+    };
+
+    document.getElementById("runSpeech").onclick = async () => {
+      const text = document.getElementById("speechText").value.trim();
+      if(!text){ alert("Type text"); return; }
+      const res = await fetch(API + "/run/speech_to_sign", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ text })
+      });
+      const data = await res.json();
+      document.getElementById("plan2").textContent = data.plan || "(no plan)";
+      document.getElementById("final2").textContent = data.final_text || "(—)";
+      const l = document.getElementById("log2");
+      l.textContent = ""; log(l, JSON.stringify({calls: data.calls, observations: data.observations}, null, 2));
+      const gif = data.sign_animation_url || "";
+      const img = document.getElementById("signGif");
+      if (gif) { img.src = gif; img.style.display = "block"; } else { img.style.display = "none"; }
+    };
+  </script>
+</body>
+</html>
