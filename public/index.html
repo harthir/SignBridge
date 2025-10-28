@@ -1,102 +1,286 @@
 <!doctype html>
 <html>
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>SignBridge — Nemotron Agents</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>SignBridge (MediaPipe → Nemotron) — Robust Pose Heuristics</title>
   <style>
-    body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; padding: 16px; }
     .grid { display: grid; gap: 16px; grid-template-columns: 1fr; }
-    @media (min-width: 900px) { .grid { grid-template-columns: 1fr 1fr; } }
-    .card { border: 1px solid #ddd; border-radius: 12px; padding: 16px; }
-    .log { background: #fafafa; border: 1px dashed #ccc; padding: 8px; height: 180px; overflow: auto; font: 12px/1.35 ui-monospace, monospace; white-space: pre-wrap;}
+    @media (min-width: 1000px) { .grid { grid-template-columns: 1fr 1fr; } }
+    .card { border: 1px solid #ddd; border-radius: 12px; padding: 16px; background: #fff; }
+    .log { background: #fafafa; border: 1px dashed #ccc; padding: 8px; height: 180px; overflow: auto; font: 12px/1.35 ui-monospace, SFMono-Regular, monospace; white-space: pre-wrap;}
+    video, canvas { width: 100%; border-radius: 12px; background:#000; }
     button { padding: 8px 12px; border-radius: 8px; border: 1px solid #333; background: #fff; cursor: pointer; }
-    audio { width: 100%; margin-top: 8px; }
-    input[type="text"] { width: 100%; padding: 8px; border: 1px solid #aaa; border-radius: 8px; }
+    .row { display:flex; gap: 8px; align-items:center; margin: 8px 0; flex-wrap: wrap; }
+    .pill { padding: 4px 8px; border-radius: 9999px; background:#eef; font-weight:600 }
+    .small { font-size: 12px; color: #555; }
+    label { user-select:none; }
   </style>
 </head>
 <body>
-  <h1>SignBridge — Nemotron Agents (VL + Function Calling)</h1>
+  <h1>SignBridge — Camera (MediaPipe) → Nemotron Text</h1>
+
   <div class="grid">
     <div class="card">
-      <h2>🖐️ Sign → 🗣️ Speech</h2>
-      <input id="signFile" type="file" accept="image/*"/>
-      <button id="runSign">Run</button>
-      <p><b>Plan:</b> <span id="plan1">—</span></p>
-      <p><b>Final Text:</b> <span id="final1">—</span></p>
-      <audio id="tts1" controls style="display:none"></audio>
-      <div class="log" id="log1"></div>
+      <h2>Live Camera</h2>
+      <div class="row">
+        <button id="startBtn">Start Camera</button>
+        <label><input type="checkbox" id="mirror" checked /> Mirror preview</label>
+        <label><input type="checkbox" id="debugToggle" /> Debug</label>
+      </div>
+      <div class="row small">
+        <span>Detected Pose (smoothed): <span class="pill" id="pose">—</span></span>
+        <span>Raw (current frame): <span class="pill" id="poseRaw">—</span></span>
+      </div>
+      <video id="video" autoplay playsinline muted></video>
+      <canvas id="overlay"></canvas>
+
+      <div class="row">
+        <button id="sendBtn">Send to Agent</button>
+        <span>Agent Output: <span class="pill" id="english">—</span></span>
+      </div>
+
+      <div class="log" id="log"></div>
     </div>
 
     <div class="card">
-      <h2>🗣️ Speech → 🤟 Sign</h2>
-      <input id="speechText" type="text" placeholder="Type speech…"/>
-      <button id="runSpeech">Run</button>
-      <p><b>Plan:</b> <span id="plan2">—</span></p>
-      <p><b>For Signing:</b> <span id="final2">—</span></p>
-      <img id="signGif" style="max-width:100%;display:none" alt="sign gif"/>
-      <div class="log" id="log2"></div>
+      <h2>What we recognize (demo set)</h2>
+      <ul>
+        <li><b>OPEN_PALM</b> — all 5 fingers extended</li>
+        <li><b>FIST</b> — no fingers extended</li>
+        <li><b>THUMBS_UP</b> — thumb extended, other fingers curled</li>
+        <li><b>ONE–FIVE</b> — finger count (index..pinky)</li>
+      </ul>
+      <p class="small">
+        Tips: Good lighting, keep your hand in frame. If the camera is mirrored, the math still works.<br/>
+        We use <b>angles at each PIP joint</b> and a <b>palm width scale</b> for robust detection, then <b>smooth</b> over 7 frames.
+      </p>
+      <p class="small">
+        Compared to the first version (tip vs PIP Y), this is orientation-agnostic and distance-agnostic.
+      </p>
     </div>
   </div>
 
-  <script>
-    const API="http://localhost:8000";
-    const log=(el,m)=>{el.textContent+=m+"\n";el.scrollTop=el.scrollHeight};
+  <!-- MediaPipe Hands (CDN) -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
 
-    document.getElementById("runSign").onclick=async()=>{
-      const f=document.getElementById("signFile").files[0];
-      const L=document.getElementById("log1");
-      L.textContent="";
-      try{
-        if(!f){ alert("Choose an image first"); return; }
-        const fd=new FormData(); fd.append("file", f);
-        const r=await fetch(API+"/run/sign_to_speech",{method:"POST",body:fd});
-        if(!r.ok){
-          const txt=await r.text();
-          log(L, `HTTP ${r.status} ${r.statusText}`); log(L, txt);
-          alert(`Backend error ${r.status}. See log box.`);
-          return;
+  <script>
+    const API = "http://localhost:8000";
+    const logEl = document.getElementById("log");
+    const poseEl = document.getElementById("pose");
+    const poseRawEl = document.getElementById("poseRaw");
+    const englishEl = document.getElementById("english");
+    const video = document.getElementById("video");
+    const overlay = document.getElementById("overlay");
+    const ctx = overlay.getContext("2d");
+    const mirrorCb = document.getElementById("mirror");
+    const debugCb = document.getElementById("debugToggle");
+
+    const log = (m)=>{ logEl.textContent += m + "\n"; logEl.scrollTop = logEl.scrollHeight; };
+
+    // ---------- Geometry helpers ----------
+    function sub(a,b){ return {x:a.x-b.x, y:a.y-b.y}; }
+    function dot(a,b){ return a.x*b.x + a.y*b.y; }
+    function mag(v){ return Math.hypot(v.x, v.y); }
+    function norm(v){ const m=mag(v)||1e-6; return {x:v.x/m, y:v.y/m}; }
+    function dist(a,b){ return Math.hypot(a.x-b.x, a.y-b.y); }
+
+    // Angle at vertex p (radians) from points a-p-b (i.e., angle a-p-b)
+    function angle(a,p,b){
+      const v1 = norm(sub(a,p));
+      const v2 = norm(sub(b,p));
+      const d = Math.min(1, Math.max(-1, dot(v1,v2)));
+      return Math.acos(d);
+    }
+
+    // ---------- Finger state via PIP angle ----------
+    // Mediapipe indices:
+    // Thumb: 1-2-3-4 (we’ll use angle at 3)
+    // Index: 5-6-7-8  (use angle at 6)
+    // Middle: 9-10-11-12 (angle at 10)
+    // Ring: 13-14-15-16 (angle at 14)
+    // Pinky: 17-18-19-20 (angle at 18)
+    const FINGER_CFG = [
+      { name: "THUMB", mcp: 2, pip: 3, tip: 4 },
+      { name: "INDEX", mcp: 6-1, pip: 6, tip: 8 },   // mapping to MCP: 5, PIP:6, TIP:8
+      { name: "MIDDLE", mcp: 10-1, pip: 10, tip: 12 }, // MCP 9, PIP 10, TIP 12
+      { name: "RING", mcp: 14-1, pip: 14, tip: 16 },   // MCP 13, PIP 14, TIP 16
+      { name: "PINKY", mcp: 18-1, pip: 18, tip: 20 }   // MCP 17, PIP 18, TIP 20
+    ];
+    // Fix those MCP indices explicitly (above shortcuts are confusing when minified):
+    FINGER_CFG[1].mcp = 5;  // INDEX
+    FINGER_CFG[2].mcp = 9;  // MIDDLE
+    FINGER_CFG[3].mcp = 13; // RING
+    FINGER_CFG[4].mcp = 17; // PINKY
+
+    function fingerExtendedByAngle(lms, cfg){
+      const a = lms[cfg.mcp], p = lms[cfg.pip], b = lms[cfg.tip];
+      if(!a||!p||!b) return false;
+      const ang = angle(a,p,b); // radians
+      // Extended finger => angle at PIP is "open"/straight (close to 180°).
+      // Threshold ~ 2.3 rad (~132°). Tuneable if too sensitive.
+      return ang > 2.3;
+    }
+
+    function thumbExtended(lms){
+      // Thumb is special. Use PIP angle AND lateral reach relative to palm width.
+      const a = lms[2], p = lms[3], b = lms[4]; // thumb mcp, pip, tip
+      if(!a||!p||!b) return false;
+      const ang = angle(a,p,b);
+      const palmW = palmWidth(lms);
+      const reach = Math.abs(b.x - lms[5].x); // tip vs index MCP (x separation)
+      return (ang > 2.2) && (reach > 0.12 * palmW);
+    }
+
+    function palmWidth(lms){
+      // measure span from index MCP (5) to pinky MCP (17)
+      const i = lms[5], pk = lms[17];
+      if(!i || !pk) return 0.08; // fallback
+      return dist(i, pk);
+    }
+
+    function classifyRawPose(lms){
+      // Compute boolean extended for each finger
+      const ext = {
+        THUMB: thumbExtended(lms),
+        INDEX: fingerExtendedByAngle(lms, FINGER_CFG[1]),
+        MIDDLE: fingerExtendedByAngle(lms, FINGER_CFG[2]),
+        RING: fingerExtendedByAngle(lms, FINGER_CFG[3]),
+        PINKY: fingerExtendedByAngle(lms, FINGER_CFG[4]),
+      };
+      const count = ["INDEX","MIDDLE","RING","PINKY"].reduce((n,k)=>n+(ext[k]?1:0),0);
+
+      // Heuristic labels
+      if (!ext.INDEX && !ext.MIDDLE && !ext.RING && !ext.PINKY && !ext.THUMB) return "FIST";
+      if (!ext.INDEX && !ext.MIDDLE && !ext.RING && !ext.PINKY &&  ext.THUMB) return "THUMBS_UP";
+      if ( ext.INDEX &&  ext.MIDDLE &&  ext.RING &&  ext.PINKY && ext.THUMB) return "OPEN_PALM";
+
+      if (count === 1) return "ONE";
+      if (count === 2) return "TWO";
+      if (count === 3) return "THREE";
+      if (count === 4) {
+        // If all four long fingers extended but thumb curled, call it FOUR; if thumb also extended, OPEN_PALM already matched.
+        return "FOUR";
+      }
+      // Fallbacks
+      if (count === 0) return ext.THUMB ? "THUMBS_UP" : "FIST";
+      return "FIVE";
+    }
+
+    // ---------- Smoothing (majority vote over last N frames) ----------
+    const SMOOTH_N = 7;
+    const recent = [];
+    function smoothPose(p){
+      if(!p){ recent.length = 0; return null; }
+      recent.push(p);
+      if(recent.length > SMOOTH_N) recent.shift();
+      const freq = {};
+      for(const x of recent) freq[x] = (freq[x]||0)+1;
+      let best = null, bestN = -1;
+      for(const [k,v] of Object.entries(freq)) if(v>bestN){ best=k; bestN=v; }
+      return best;
+    }
+
+    // ---------- MediaPipe Hands setup ----------
+    let camera = null;
+
+    const hands = new Hands({
+      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+    });
+    hands.setOptions({
+      maxNumHands: 1,
+      minDetectionConfidence: 0.6,
+      minTrackingConfidence: 0.6,
+      modelComplexity: 0 // lighter model, often more stable in browsers
+    });
+    hands.onResults((results) => {
+      // prepare canvas size
+      overlay.width = video.videoWidth || 640;
+      overlay.height = video.videoHeight || 360;
+
+      // draw frame
+      ctx.save();
+      ctx.clearRect(0,0,overlay.width,overlay.height);
+      if (mirrorCb.checked) {
+        ctx.translate(overlay.width, 0);
+        ctx.scale(-1, 1);
+      }
+
+      if (results.multiHandLandmarks && results.multiHandLandmarks.length) {
+        const lms = results.multiHandLandmarks[0];
+
+        // draw landmarks if debug
+        if (debugCb.checked) {
+          window.drawConnectors(ctx, lms, window.HAND_CONNECTIONS, {color:'#0af', lineWidth: 2});
+          window.drawLandmarks(ctx, lms, {color:'#f40', radius: 2});
         }
-        const d=await r.json();
-        document.getElementById("plan1").textContent=d.plan||"(no plan)";
-        document.getElementById("final1").textContent=d.final_text||"(—)";
-        log(L, JSON.stringify({calls:d.calls, observations:d.observations}, null, 2));
-        const a=document.getElementById("tts1");
-        if(d.final_audio_b64){ a.src="data:audio/wav;base64,"+d.final_audio_b64; a.style.display="block"; }
-        else { a.style.display="none"; }
-      }catch(err){
-        log(L, "JS error: "+(err?.message||err));
-        alert("Frontend error — check the log box and DevTools console.");
+
+        const raw = classifyRawPose(lms);
+        const smoothed = smoothPose(raw);
+        poseRawEl.textContent = raw || "—";
+        poseEl.textContent = smoothed || "—";
+
+        if (debugCb.checked && raw) {
+          ctx.fillStyle = "rgba(0,0,0,0.6)";
+          ctx.fillRect(10,10,180,68);
+          ctx.fillStyle = "#fff";
+          ctx.font = "12px ui-monospace, monospace";
+          ctx.fillText("raw: "+raw, 16, 28);
+          ctx.fillText("smoothed: "+(smoothed||"—"), 16, 46);
+          ctx.fillText("palmW: "+palmWidth(lms).toFixed(3), 16, 64);
+        }
+      } else {
+        smoothPose(null);
+        poseRawEl.textContent = "—";
+        poseEl.textContent = "—";
+      }
+      ctx.restore();
+    });
+
+    document.getElementById("startBtn").onclick = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false });
+        video.srcObject = stream;
+        await video.play();
+
+        camera = new window.Camera(video, {
+          onFrame: async () => {
+            await hands.send({ image: video });
+          },
+          width: 640,
+          height: 360
+        });
+        camera.start();
+        log("Camera started. Show your hand to see a label. Toggle ‘Debug’ to see landmarks.");
+      } catch (err) {
+        log("Camera error: " + err);
+        alert("Could not access camera. Check permissions.");
       }
     };
 
-    document.getElementById("runSpeech").onclick=async()=>{
-      const t=document.getElementById("speechText").value.trim();
-      const L=document.getElementById("log2");
-      L.textContent="";
-      try{
-        if(!t){ alert("Type some text"); return; }
-        const r=await fetch(API+"/run/speech_to_sign",{
-          method:"POST",
-          headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({text:t})
+    document.getElementById("sendBtn").onclick = async () => {
+      const gloss = (poseEl.textContent || "").trim();
+      if (!gloss || gloss === "—") { alert("Show a pose first."); return; }
+      try {
+        const r = await fetch(`${API}/translate/gloss`, {
+          method: "POST",
+          headers: {"Content-Type":"application/json"},
+          body: JSON.stringify({ gloss })
         });
-        if(!r.ok){
-          const txt=await r.text();
-          log(L, `HTTP ${r.status} ${r.statusText}`); log(L, txt);
-          alert(`Backend error ${r.status}. See log box.`);
+        if (!r.ok) {
+          const t = await r.text();
+          log(`HTTP ${r.status}: ${t}`);
+          alert("Backend error. See log.");
           return;
         }
-        const d=await r.json();
-        document.getElementById("plan2").textContent=d.plan||"(no plan)";
-        document.getElementById("final2").textContent=d.final_text||"(—)";
-        log(L, JSON.stringify({calls:d.calls, observations:d.observations}, null, 2));
-        const gif=d.sign_animation_url||"";
-        const img=document.getElementById("signGif");
-        if(gif){ img.src=gif; img.style.display="block"; } else { img.style.display="none"; }
-      }catch(err){
-        log(L, "JS error: "+(err?.message||err));
-        alert("Frontend error — check the log box and DevTools console.");
+        const d = await r.json();
+        englishEl.textContent = d.english || "—";
+        log(`gloss=${gloss} → "${englishEl.textContent}"`);
+      } catch (err) {
+        log("JS error: " + err?.message);
       }
     };
   </script>
