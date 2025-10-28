@@ -1,7 +1,7 @@
 # tools_runtime.py
 import base64
 
-# Minimal sign GIF map; expand as needed
+# Minimal sign GIF map; expand if you add more assets
 SIGN_GIF_MAP = {
     "HELLO": "assets/hello.gif",
     "THANK-YOU": "assets/thankyou.gif",
@@ -13,20 +13,20 @@ def tool_sign_render(gloss: str) -> dict:
 
 def tool_safety_check(text: str) -> dict:
     """
-    Ultra-light local placeholder for demo stability.
-    Swap with Nemotron Safety Guard call if you want real moderation.
+    Lightweight local moderation placeholder.
+    Swap with Safety-Guard via NIM if desired.
     """
     label = "pass"
-    categories = []
-    if any(word in text.lower() for word in ["hate", "violence"]):
+    cats = []
+    bad = ["hate", "kill", "violence", "slur"]
+    if any(w in text.lower() for w in bad):
         label = "warn"
-        categories.append("toxicity")
-    return {"label": label, "categories": categories}
+        cats.append("toxicity")
+    return {"label": label, "categories": cats}
 
 def tool_riva_tts(text: str) -> dict:
     """
-    Stub for Riva TTS; return empty audio in base64 for demo.
-    Wire real gRPC later.
+    Stub for TTS; return empty audio (keeps demo flowing on py3.13).
     """
     return {"wav_b64": ""}
 

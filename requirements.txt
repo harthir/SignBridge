@@ -5,5 +5,8 @@ requests==2.32.3
 pydantic==2.9.2
 langgraph==0.2.45
 langchain==0.3.3
-grpcio==1.66.1
-protobuf==5.27.3
+python-multipart==0.0.12
+# NOTE: grpcio/protobuf removed to avoid build errors on Python 3.13 (arm64).
+# If you later switch to Python 3.11 and want Riva ASR/TTS, add:
+# grpcio==1.66.1
+# protobuf==5.27.3

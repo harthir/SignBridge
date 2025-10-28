@@ -9,9 +9,10 @@
     .grid { display: grid; gap: 16px; grid-template-columns: 1fr; }
     @media (min-width: 900px) { .grid { grid-template-columns: 1fr 1fr; } }
     .card { border: 1px solid #ddd; border-radius: 12px; padding: 16px; }
-    .log { background: #fafafa; border: 1px dashed #ccc; padding: 8px; height: 160px; overflow: auto; font: 12px/1.35 ui-monospace, monospace; }
+    .log { background: #fafafa; border: 1px dashed #ccc; padding: 8px; height: 180px; overflow: auto; font: 12px/1.35 ui-monospace, monospace; white-space: pre-wrap;}
     button { padding: 8px 12px; border-radius: 8px; border: 1px solid #333; background: #fff; cursor: pointer; }
     audio { width: 100%; margin-top: 8px; }
+    input[type="text"] { width: 100%; padding: 8px; border: 1px solid #aaa; border-radius: 8px; }
   </style>
 </head>
 <body>
@@ -29,7 +30,7 @@
 
     <div class="card">
       <h2>🗣️ Speech → 🤟 Sign</h2>
-      <input id="speechText" placeholder="Type speech…"/>
+      <input id="speechText" type="text" placeholder="Type speech…"/>
       <button id="runSpeech">Run</button>
       <p><b>Plan:</b> <span id="plan2">—</span></p>
       <p><b>For Signing:</b> <span id="final2">—</span></p>
@@ -39,42 +40,64 @@
   </div>
 
   <script>
-    const API = "http://localhost:8000";
-    const log = (el, msg) => { el.textContent += msg + "\n"; el.scrollTop = el.scrollHeight; };
+    const API="http://localhost:8000";
+    const log=(el,m)=>{el.textContent+=m+"\n";el.scrollTop=el.scrollHeight};
 
-    document.getElementById("runSign").onclick = async () => {
-      const f = document.getElementById("signFile").files[0];
-      if(!f){ alert("Choose an image"); return; }
-      const fd = new FormData(); fd.append("file", f);
-      const res = await fetch(API + "/run/sign_to_speech", { method: "POST", body: fd });
-      const data = await res.json();
-      document.getElementById("plan1").textContent = data.plan || "(no plan)";
-      document.getElementById("final1").textContent = data.final_text || "(—)";
-      const l = document.getElementById("log1");
-      l.textContent = ""; log(l, JSON.stringify({calls: data.calls, observations: data.observations}, null, 2));
-      const a = document.getElementById("tts1");
-      if (data.final_audio_b64) {
-        a.src = "data:audio/wav;base64," + data.final_audio_b64;
-        a.style.display = "block";
-      } else { a.style.display = "none"; }
+    document.getElementById("runSign").onclick=async()=>{
+      const f=document.getElementById("signFile").files[0];
+      const L=document.getElementById("log1");
+      L.textContent="";
+      try{
+        if(!f){ alert("Choose an image first"); return; }
+        const fd=new FormData(); fd.append("file", f);
+        const r=await fetch(API+"/run/sign_to_speech",{method:"POST",body:fd});
+        if(!r.ok){
+          const txt=await r.text();
+          log(L, `HTTP ${r.status} ${r.statusText}`); log(L, txt);
+          alert(`Backend error ${r.status}. See log box.`);
+          return;
+        }
+        const d=await r.json();
+        document.getElementById("plan1").textContent=d.plan||"(no plan)";
+        document.getElementById("final1").textContent=d.final_text||"(—)";
+        log(L, JSON.stringify({calls:d.calls, observations:d.observations}, null, 2));
+        const a=document.getElementById("tts1");
+        if(d.final_audio_b64){ a.src="data:audio/wav;base64,"+d.final_audio_b64; a.style.display="block"; }
+        else { a.style.display="none"; }
+      }catch(err){
+        log(L, "JS error: "+(err?.message||err));
+        alert("Frontend error — check the log box and DevTools console.");
+      }
     };
 
-    document.getElementById("runSpeech").onclick = async () => {
-      const text = document.getElementById("speechText").value.trim();
-      if(!text){ alert("Type text"); return; }
-      const res = await fetch(API + "/run/speech_to_sign", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({ text })
-      });
-      const data = await res.json();
-      document.getElementById("plan2").textContent = data.plan || "(no plan)";
-      document.getElementById("final2").textContent = data.final_text || "(—)";
-      const l = document.getElementById("log2");
-      l.textContent = ""; log(l, JSON.stringify({calls: data.calls, observations: data.observations}, null, 2));
-      const gif = data.sign_animation_url || "";
-      const img = document.getElementById("signGif");
-      if (gif) { img.src = gif; img.style.display = "block"; } else { img.style.display = "none"; }
+    document.getElementById("runSpeech").onclick=async()=>{
+      const t=document.getElementById("speechText").value.trim();
+      const L=document.getElementById("log2");
+      L.textContent="";
+      try{
+        if(!t){ alert("Type some text"); return; }
+        const r=await fetch(API+"/run/speech_to_sign",{
+          method:"POST",
+          headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({text:t})
+        });
+        if(!r.ok){
+          const txt=await r.text();
+          log(L, `HTTP ${r.status} ${r.statusText}`); log(L, txt);
+          alert(`Backend error ${r.status}. See log box.`);
+          return;
+        }
+        const d=await r.json();
+        document.getElementById("plan2").textContent=d.plan||"(no plan)";
+        document.getElementById("final2").textContent=d.final_text||"(—)";
+        log(L, JSON.stringify({calls:d.calls, observations:d.observations}, null, 2));
+        const gif=d.sign_animation_url||"";
+        const img=document.getElementById("signGif");
+        if(gif){ img.src=gif; img.style.display="block"; } else { img.style.display="none"; }
+      }catch(err){
+        log(L, "JS error: "+(err?.message||err));
+        alert("Frontend error — check the log box and DevTools console.");
+      }
     };
   </script>
 </body>
