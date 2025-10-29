@@ -3,25 +3,27 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>SignBridge (MediaPipe → Nemotron) — Robust Pose Heuristics</title>
+  <title>SignBridge (MediaPipe → Nemotron → Speech)</title>
   <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; padding: 16px; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; padding: 16px; background:#f8f9fa;}
     .grid { display: grid; gap: 16px; grid-template-columns: 1fr; }
     @media (min-width: 1000px) { .grid { grid-template-columns: 1fr 1fr; } }
-    .card { border: 1px solid #ddd; border-radius: 12px; padding: 16px; background: #fff; }
+    .card { border: 1px solid #ddd; border-radius: 12px; padding: 16px; background: #fff; box-shadow: 0 2px 4px rgba(0,0,0,0.05);}
     .log { background: #fafafa; border: 1px dashed #ccc; padding: 8px; height: 180px; overflow: auto; font: 12px/1.35 ui-monospace, SFMono-Regular, monospace; white-space: pre-wrap;}
     video, canvas { width: 100%; border-radius: 12px; background:#000; }
-    button { padding: 8px 12px; border-radius: 8px; border: 1px solid #333; background: #fff; cursor: pointer; }
+    button { padding: 8px 12px; border-radius: 8px; border: 1px solid #333; background: #fff; cursor: pointer; transition: background .2s;}
+    button:hover { background:#eaeaea; }
     .row { display:flex; gap: 8px; align-items:center; margin: 8px 0; flex-wrap: wrap; }
     .pill { padding: 4px 8px; border-radius: 9999px; background:#eef; font-weight:600 }
     .small { font-size: 12px; color: #555; }
-    label { user-select:none; }
+    select, input[type="range"] { margin-left: 6px; }
   </style>
 </head>
 <body>
-  <h1>SignBridge — Camera (MediaPipe) → Nemotron Text</h1>
+  <h1>SignBridge — Camera → Nemotron → Speech</h1>
 
   <div class="grid">
+    <!-- LEFT: CAMERA -->
     <div class="card">
       <h2>Live Camera</h2>
       <div class="row">
@@ -36,16 +38,12 @@
       <video id="video" autoplay playsinline muted></video>
       <canvas id="overlay"></canvas>
 
-      <div class="row">
-        <button id="sendBtn">Send to Agent</button>
-        <span>Agent Output: <span class="pill" id="english">—</span></span>
-      </div>
-
       <div class="log" id="log"></div>
     </div>
 
+    <!-- RIGHT: DEMO + TTS -->
     <div class="card">
-      <h2>What we recognize (demo set)</h2>
+      <h2>What We Recognize (Demo Set)</h2>
       <ul>
         <li><b>OPEN_PALM</b> — all 5 fingers extended</li>
         <li><b>FIST</b> — no fingers extended</li>
@@ -53,16 +51,41 @@
         <li><b>ONE–FIVE</b> — finger count (index..pinky)</li>
       </ul>
       <p class="small">
-        Tips: Good lighting, keep your hand in frame. If the camera is mirrored, the math still works.<br/>
-        We use <b>angles at each PIP joint</b> and a <b>palm width scale</b> for robust detection, then <b>smooth</b> over 7 frames.
+        Good lighting & clear hand positioning help recognition accuracy.<br/>
+        We analyze <b>finger joint angles</b> and <b>palm width</b>, then smooth results across frames.
       </p>
-      <p class="small">
-        Compared to the first version (tip vs PIP Y), this is orientation-agnostic and distance-agnostic.
-      </p>
+
+      <hr/>
+      <h3>Nemotron Agent Output</h3>
+      <div class="row">
+        <button id="sendBtn">Send to Agent</button>
+        <span>Agent Output: <span class="pill" id="english">—</span></span>
+      </div>
+
+      <div class="row">
+        <label><input type="checkbox" id="autoSpeak" checked /> Speak automatically</label>
+        <label>Voice:
+          <select id="voiceSelect"></select>
+        </label>
+      </div>
+      <div class="row">
+        <label>Rate:
+          <input type="range" id="rate" min="0.5" max="1.5" step="0.05" value="1.0">
+          <span class="small" id="rateVal">1.0</span>
+        </label>
+        <label>Pitch:
+          <input type="range" id="pitch" min="0.5" max="1.8" step="0.1" value="1.0">
+          <span class="small" id="pitchVal">1.0</span>
+        </label>
+      </div>
+      <div class="row">
+        <button id="speakBtn" title="Replay last agent response">🔊 Speak Last</button>
+        <button id="stopBtn" title="Stop speaking">⏹️ Stop</button>
+      </div>
     </div>
   </div>
 
-  <!-- MediaPipe Hands (CDN) -->
+  <!-- MediaPipe Hands -->
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
@@ -78,210 +101,117 @@
     const ctx = overlay.getContext("2d");
     const mirrorCb = document.getElementById("mirror");
     const debugCb = document.getElementById("debugToggle");
-
+    const autoSpeak = document.getElementById("autoSpeak");
+    const voiceSelect = document.getElementById("voiceSelect");
+    const speakBtn = document.getElementById("speakBtn");
+    const stopBtn = document.getElementById("stopBtn");
+    const rate = document.getElementById("rate");
+    const pitch = document.getElementById("pitch");
+    const rateVal = document.getElementById("rateVal");
+    const pitchVal = document.getElementById("pitchVal");
     const log = (m)=>{ logEl.textContent += m + "\n"; logEl.scrollTop = logEl.scrollHeight; };
 
+    // ---------- TTS ----------
+    let lastUtteranceText = "";
+    let voices = [];
+    function populateVoices() {
+      voices = window.speechSynthesis.getVoices();
+      const was = voiceSelect.value;
+      voiceSelect.innerHTML = "";
+      const sorted = voices.slice().sort((a,b)=>{
+        const ae=(a.lang||"").startsWith("en")?0:1;
+        const be=(b.lang||"").startsWith("en")?0:1;
+        if(ae!==be) return ae-be;
+        return (a.name||"").localeCompare(b.name||"");
+      });
+      for (const v of sorted) {
+        const opt=document.createElement("option");
+        opt.value=v.name; opt.textContent=`${v.name} (${v.lang})${v.default?" — default":""}`;
+        voiceSelect.appendChild(opt);
+      }
+      if(was) voiceSelect.value=was;
+      if(!voiceSelect.value&&sorted.length){
+        const eng=sorted.find(v=>v.lang&&v.lang.startsWith("en"));
+        voiceSelect.value=(eng&&eng.name)||sorted[0].name;
+      }
+    }
+    populateVoices();
+    if(typeof window.speechSynthesis!=="undefined"){
+      window.speechSynthesis.onvoiceschanged=populateVoices;
+    }
+    function speak(text){
+      if(!text||!window.speechSynthesis)return;
+      window.speechSynthesis.cancel();
+      const u=new SpeechSynthesisUtterance(text);
+      const selected=voices.find(v=>v.name===voiceSelect.value);
+      if(selected)u.voice=selected;
+      u.rate=parseFloat(rate.value||"1.0");
+      u.pitch=parseFloat(pitch.value||"1.0");
+      u.onstart=()=>log(`🔊 speaking: "${text}"`);
+      u.onend=()=>log("🔇 done speaking.");
+      window.speechSynthesis.speak(u);
+    }
+    rate.addEventListener("input",()=>{rateVal.textContent=rate.value;});
+    pitch.addEventListener("input",()=>{pitchVal.textContent=pitch.value;});
+    speakBtn.addEventListener("click",()=>{if(lastUtteranceText)speak(lastUtteranceText);});
+    stopBtn.addEventListener("click",()=>window.speechSynthesis.cancel());
+
     // ---------- Geometry helpers ----------
-    function sub(a,b){ return {x:a.x-b.x, y:a.y-b.y}; }
-    function dot(a,b){ return a.x*b.x + a.y*b.y; }
-    function mag(v){ return Math.hypot(v.x, v.y); }
-    function norm(v){ const m=mag(v)||1e-6; return {x:v.x/m, y:v.y/m}; }
-    function dist(a,b){ return Math.hypot(a.x-b.x, a.y-b.y); }
+    function sub(a,b){return{x:a.x-b.x,y:a.y-b.y};}
+    function dot(a,b){return a.x*b.x+a.y*b.y;}
+    function mag(v){return Math.hypot(v.x,v.y);}
+    function norm(v){const m=mag(v)||1e-6;return{x:v.x/m,y:v.y/m};}
+    function dist(a,b){return Math.hypot(a.x-b.x,a.y-b.y);}
+    function angle(a,p,b){const v1=norm(sub(a,p)),v2=norm(sub(b,p));return Math.acos(Math.min(1,Math.max(-1,dot(v1,v2))));}
 
-    // Angle at vertex p (radians) from points a-p-b (i.e., angle a-p-b)
-    function angle(a,p,b){
-      const v1 = norm(sub(a,p));
-      const v2 = norm(sub(b,p));
-      const d = Math.min(1, Math.max(-1, dot(v1,v2)));
-      return Math.acos(d);
-    }
+    const FINGER_CFG=[{mcp:2,pip:3,tip:4},{mcp:5,pip:6,tip:8},{mcp:9,pip:10,tip:12},{mcp:13,pip:14,tip:16},{mcp:17,pip:18,tip:20}];
+    function fingerExtendedByAngle(l,c){const a=l[c.mcp],p=l[c.pip],b=l[c.tip];if(!a||!p||!b)return false;return angle(a,p,b)>2.3;}
+    function thumbExtended(l){const a=l[2],p=l[3],b=l[4];if(!a||!p||!b)return false;const i=l[5],pk=l[17];const w=(i&&pk)?dist(i,pk):0.08;return angle(a,p,b)>2.2&&Math.abs(b.x-(i?i.x:b.x))>0.12*w;}
+    function classifyRawPose(l){const e={THUMB:thumbExtended(l),INDEX:fingerExtendedByAngle(l,FINGER_CFG[1]),MIDDLE:fingerExtendedByAngle(l,FINGER_CFG[2]),RING:fingerExtendedByAngle(l,FINGER_CFG[3]),PINKY:fingerExtendedByAngle(l,FINGER_CFG[4])};const c=["INDEX","MIDDLE","RING","PINKY"].reduce((n,k)=>n+(e[k]?1:0),0);
+      if(!e.INDEX&&!e.MIDDLE&&!e.RING&&!e.PINKY&&!e.THUMB)return"FIST";
+      if(!e.INDEX&&!e.MIDDLE&&!e.RING&&!e.PINKY&&e.THUMB)return"THUMBS_UP";
+      if(e.INDEX&&e.MIDDLE&&e.RING&&e.PINKY&&e.THUMB)return"OPEN_PALM";
+      if(c===1)return"ONE";if(c===2)return"TWO";if(c===3)return"THREE";if(c===4)return"FOUR";return c===0?(e.THUMB?"THUMBS_UP":"FIST"):"FIVE";}
+    const recent=[];function smoothPose(p){if(!p){recent.length=0;return null;}recent.push(p);if(recent.length>7)recent.shift();const f={};for(const x of recent)f[x]=(f[x]||0)+1;return Object.entries(f).reduce((a,b)=>b[1]>a[1]?b:a)[0];}
 
-    // ---------- Finger state via PIP angle ----------
-    // Mediapipe indices:
-    // Thumb: 1-2-3-4 (we’ll use angle at 3)
-    // Index: 5-6-7-8  (use angle at 6)
-    // Middle: 9-10-11-12 (angle at 10)
-    // Ring: 13-14-15-16 (angle at 14)
-    // Pinky: 17-18-19-20 (angle at 18)
-    const FINGER_CFG = [
-      { name: "THUMB", mcp: 2, pip: 3, tip: 4 },
-      { name: "INDEX", mcp: 6-1, pip: 6, tip: 8 },   // mapping to MCP: 5, PIP:6, TIP:8
-      { name: "MIDDLE", mcp: 10-1, pip: 10, tip: 12 }, // MCP 9, PIP 10, TIP 12
-      { name: "RING", mcp: 14-1, pip: 14, tip: 16 },   // MCP 13, PIP 14, TIP 16
-      { name: "PINKY", mcp: 18-1, pip: 18, tip: 20 }   // MCP 17, PIP 18, TIP 20
-    ];
-    // Fix those MCP indices explicitly (above shortcuts are confusing when minified):
-    FINGER_CFG[1].mcp = 5;  // INDEX
-    FINGER_CFG[2].mcp = 9;  // MIDDLE
-    FINGER_CFG[3].mcp = 13; // RING
-    FINGER_CFG[4].mcp = 17; // PINKY
-
-    function fingerExtendedByAngle(lms, cfg){
-      const a = lms[cfg.mcp], p = lms[cfg.pip], b = lms[cfg.tip];
-      if(!a||!p||!b) return false;
-      const ang = angle(a,p,b); // radians
-      // Extended finger => angle at PIP is "open"/straight (close to 180°).
-      // Threshold ~ 2.3 rad (~132°). Tuneable if too sensitive.
-      return ang > 2.3;
-    }
-
-    function thumbExtended(lms){
-      // Thumb is special. Use PIP angle AND lateral reach relative to palm width.
-      const a = lms[2], p = lms[3], b = lms[4]; // thumb mcp, pip, tip
-      if(!a||!p||!b) return false;
-      const ang = angle(a,p,b);
-      const palmW = palmWidth(lms);
-      const reach = Math.abs(b.x - lms[5].x); // tip vs index MCP (x separation)
-      return (ang > 2.2) && (reach > 0.12 * palmW);
-    }
-
-    function palmWidth(lms){
-      // measure span from index MCP (5) to pinky MCP (17)
-      const i = lms[5], pk = lms[17];
-      if(!i || !pk) return 0.08; // fallback
-      return dist(i, pk);
-    }
-
-    function classifyRawPose(lms){
-      // Compute boolean extended for each finger
-      const ext = {
-        THUMB: thumbExtended(lms),
-        INDEX: fingerExtendedByAngle(lms, FINGER_CFG[1]),
-        MIDDLE: fingerExtendedByAngle(lms, FINGER_CFG[2]),
-        RING: fingerExtendedByAngle(lms, FINGER_CFG[3]),
-        PINKY: fingerExtendedByAngle(lms, FINGER_CFG[4]),
-      };
-      const count = ["INDEX","MIDDLE","RING","PINKY"].reduce((n,k)=>n+(ext[k]?1:0),0);
-
-      // Heuristic labels
-      if (!ext.INDEX && !ext.MIDDLE && !ext.RING && !ext.PINKY && !ext.THUMB) return "FIST";
-      if (!ext.INDEX && !ext.MIDDLE && !ext.RING && !ext.PINKY &&  ext.THUMB) return "THUMBS_UP";
-      if ( ext.INDEX &&  ext.MIDDLE &&  ext.RING &&  ext.PINKY && ext.THUMB) return "OPEN_PALM";
-
-      if (count === 1) return "ONE";
-      if (count === 2) return "TWO";
-      if (count === 3) return "THREE";
-      if (count === 4) {
-        // If all four long fingers extended but thumb curled, call it FOUR; if thumb also extended, OPEN_PALM already matched.
-        return "FOUR";
-      }
-      // Fallbacks
-      if (count === 0) return ext.THUMB ? "THUMBS_UP" : "FIST";
-      return "FIVE";
-    }
-
-    // ---------- Smoothing (majority vote over last N frames) ----------
-    const SMOOTH_N = 7;
-    const recent = [];
-    function smoothPose(p){
-      if(!p){ recent.length = 0; return null; }
-      recent.push(p);
-      if(recent.length > SMOOTH_N) recent.shift();
-      const freq = {};
-      for(const x of recent) freq[x] = (freq[x]||0)+1;
-      let best = null, bestN = -1;
-      for(const [k,v] of Object.entries(freq)) if(v>bestN){ best=k; bestN=v; }
-      return best;
-    }
-
-    // ---------- MediaPipe Hands setup ----------
-    let camera = null;
-
-    const hands = new Hands({
-      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
-    });
-    hands.setOptions({
-      maxNumHands: 1,
-      minDetectionConfidence: 0.6,
-      minTrackingConfidence: 0.6,
-      modelComplexity: 0 // lighter model, often more stable in browsers
-    });
-    hands.onResults((results) => {
-      // prepare canvas size
-      overlay.width = video.videoWidth || 640;
-      overlay.height = video.videoHeight || 360;
-
-      // draw frame
-      ctx.save();
-      ctx.clearRect(0,0,overlay.width,overlay.height);
-      if (mirrorCb.checked) {
-        ctx.translate(overlay.width, 0);
-        ctx.scale(-1, 1);
-      }
-
-      if (results.multiHandLandmarks && results.multiHandLandmarks.length) {
-        const lms = results.multiHandLandmarks[0];
-
-        // draw landmarks if debug
-        if (debugCb.checked) {
-          window.drawConnectors(ctx, lms, window.HAND_CONNECTIONS, {color:'#0af', lineWidth: 2});
-          window.drawLandmarks(ctx, lms, {color:'#f40', radius: 2});
-        }
-
-        const raw = classifyRawPose(lms);
-        const smoothed = smoothPose(raw);
-        poseRawEl.textContent = raw || "—";
-        poseEl.textContent = smoothed || "—";
-
-        if (debugCb.checked && raw) {
-          ctx.fillStyle = "rgba(0,0,0,0.6)";
-          ctx.fillRect(10,10,180,68);
-          ctx.fillStyle = "#fff";
-          ctx.font = "12px ui-monospace, monospace";
-          ctx.fillText("raw: "+raw, 16, 28);
-          ctx.fillText("smoothed: "+(smoothed||"—"), 16, 46);
-          ctx.fillText("palmW: "+palmWidth(lms).toFixed(3), 16, 64);
-        }
-      } else {
-        smoothPose(null);
-        poseRawEl.textContent = "—";
-        poseEl.textContent = "—";
-      }
+    // ---------- MediaPipe Hands ----------
+    let camera=null;
+    const hands=new Hands({locateFile:(f)=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`});
+    hands.setOptions({maxNumHands:1,minDetectionConfidence:0.6,minTrackingConfidence:0.6,modelComplexity:0});
+    hands.onResults((r)=>{
+      overlay.width=video.videoWidth||640;overlay.height=video.videoHeight||360;
+      ctx.save();ctx.clearRect(0,0,overlay.width,overlay.height);
+      if(mirrorCb.checked){ctx.translate(overlay.width,0);ctx.scale(-1,1);}
+      if(r.multiHandLandmarks&&r.multiHandLandmarks.length){
+        const l=r.multiHandLandmarks[0];
+        if(debugCb.checked){window.drawConnectors(ctx,l,window.HAND_CONNECTIONS,{color:'#0af',lineWidth:2});window.drawLandmarks(ctx,l,{color:'#f40',radius:2});}
+        const raw=classifyRawPose(l);const s=smoothPose(raw);
+        poseRawEl.textContent=raw||"—";poseEl.textContent=s||"—";
+      }else{smoothPose(null);poseRawEl.textContent="—";poseEl.textContent="—";}
       ctx.restore();
     });
-
-    document.getElementById("startBtn").onclick = async () => {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false });
-        video.srcObject = stream;
-        await video.play();
-
-        camera = new window.Camera(video, {
-          onFrame: async () => {
-            await hands.send({ image: video });
-          },
-          width: 640,
-          height: 360
-        });
-        camera.start();
-        log("Camera started. Show your hand to see a label. Toggle ‘Debug’ to see landmarks.");
-      } catch (err) {
-        log("Camera error: " + err);
-        alert("Could not access camera. Check permissions.");
-      }
+    document.getElementById("startBtn").onclick=async()=>{
+      try{
+        const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"user"},audio:false});
+        video.srcObject=stream;await video.play();
+        camera=new window.Camera(video,{onFrame:async()=>{await hands.send({image:video});},width:640,height:360});
+        camera.start();log("Camera started. Show your hand!");
+      }catch(err){log("Camera error: "+err);alert("Could not access camera.");}
     };
 
-    document.getElementById("sendBtn").onclick = async () => {
-      const gloss = (poseEl.textContent || "").trim();
-      if (!gloss || gloss === "—") { alert("Show a pose first."); return; }
-      try {
-        const r = await fetch(`${API}/translate/gloss`, {
-          method: "POST",
-          headers: {"Content-Type":"application/json"},
-          body: JSON.stringify({ gloss })
-        });
-        if (!r.ok) {
-          const t = await r.text();
-          log(`HTTP ${r.status}: ${t}`);
-          alert("Backend error. See log.");
-          return;
-        }
-        const d = await r.json();
-        englishEl.textContent = d.english || "—";
-        log(`gloss=${gloss} → "${englishEl.textContent}"`);
-      } catch (err) {
-        log("JS error: " + err?.message);
-      }
+    // ---------- Backend + Speak ----------
+    document.getElementById("sendBtn").onclick=async()=>{
+      const gloss=(poseEl.textContent||"").trim();
+      if(!gloss||gloss==="—"){alert("Show a pose first.");return;}
+      try{
+        const r=await fetch(`${API}/translate/gloss`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({gloss})});
+        if(!r.ok){log(`HTTP ${r.status}`);alert("Backend error.");return;}
+        const d=await r.json();
+        const spoken=d.english||"—";
+        englishEl.textContent=spoken;lastUtteranceText=spoken;
+        if(autoSpeak.checked&&spoken!=="—")speak(spoken);
+        log(`gloss=${gloss} → "${spoken}"`);
+      }catch(err){log("JS error: "+err?.message);}
     };
   </script>
 </body>
